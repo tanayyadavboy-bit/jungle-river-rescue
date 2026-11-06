@@ -1,0 +1,361 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Jungle River Rescue</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#061b20;font-family:Arial,sans-serif;color:white}
+#game{display:block;width:100%;height:100%;touch-action:none}
+#hud{position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;gap:8px;pointer-events:none}
+.stat{background:#071b20cc;border:1px solid #ffffff35;border-radius:12px;padding:9px 12px;font-size:13px;font-weight:bold}
+#message{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#03171bd9;padding:22px}
+.panel{width:min(420px,100%);text-align:center;background:linear-gradient(160deg,#174b40,#09252c);border:1px solid #8cdb9c66;border-radius:22px;padding:25px 20px;box-shadow:0 15px 50px #0009}
+h1{font-size:29px;margin:0 0 8px;color:#b8f5a6}
+p{color:#e0eee5;line-height:1.5;font-size:14px}
+button{border:0;border-radius:12px;padding:13px 18px;margin:6px;background:#a9ed83;color:#12331d;font-weight:bold;font-size:15px;width:100%;cursor:pointer}
+button.secondary{background:#e0f1e8;color:#153b30}
+#hint{position:absolute;bottom:15px;left:0;right:0;text-align:center;color:white;text-shadow:0 2px 5px black;font-size:12px;pointer-events:none}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="stat">⭐ Score: <span id="score">0</span></div>
+  <div class="stat">🪙 Coins: <span id="coins">0</span></div>
+  <div class="stat">🌿 Level: <span id="level">1</span></div>
+</div>
+
+<div id="hint">Tilt phone left/right • Swipe up to speed up • Swipe down to slow down</div>
+
+<div id="message">
+  <div class="panel">
+    <h1>🌴 Jungle River Rescue</h1>
+    <p id="intro">Navigate the jungle river, avoid obstacles, collect coins and rescue animals!</p>
+    <button id="motionBtn" class="secondary">Enable Motion Control</button>
+    <button id="startBtn">START GAME ▶</button>
+    <p style="font-size:12px">Tilt your phone to steer. Swipe vertically to control speed.</p>
+    <p id="sensorStatus" style="font-size:12px">Motion control not enabled yet.</p>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const message=document.getElementById("message");
+const scoreEl=document.getElementById("score");
+const coinsEl=document.getElementById("coins");
+const levelEl=document.getElementById("level");
+const motionBtn=document.getElementById("motionBtn");
+const startBtn=document.getElementById("startBtn");
+const sensorStatus=document.getElementById("sensorStatus");
+
+let W=0,H=0,dpr=1;
+let running=false,gameOver=false;
+let score=0,coins=0,level=1;
+let boatX=0,tilt=0,speed=0.48;
+let motionEnabled=false;
+let objects=[];
+let spawnTimer=0;
+let lastTime=0;
+let verticalStart=null;
+let lastSpawnType=0;
+
+function resize(){
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  W=window.innerWidth; H=window.innerHeight;
+  canvas.width=W*dpr; canvas.height=H*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener("resize",resize);
+resize();
+
+function riverWidth(y){
+  const t=(y/H);
+  return W*(0.27+0.45*t);
+}
+function riverCenter(y){
+  return W/2+Math.sin(y*.006+performance.now()*.0002)*W*.035;
+}
+function roadEdges(y){
+  const width=riverWidth(y);
+  const center=riverCenter(y);
+  return [center-width/2,center+width/2];
+}
+
+function drawBackground(){
+  const sky=ctx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,"#174d3d");
+  sky.addColorStop(1,"#082b29");
+  ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+
+  // Jungle trees
+  for(let side=0;side<2;side++){
+    for(let i=0;i<18;i++){
+      const y=(i*H/15+(performance.now()*.035)% (H/15))%H;
+      const edge=roadEdges(y);
+      const x=side===0?edge[0]-25-i%3*18:edge[1]+25+i%3*18;
+      ctx.fillStyle=i%2?"#174a2b":"#24633a";
+      ctx.beginPath();
+      ctx.arc(x,y,18+(y/H)*22,0,Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle="#367b43";
+      ctx.beginPath();
+      ctx.arc(x-7,y-7,10+(y/H)*10,0,Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // River
+  const water=ctx.createLinearGradient(0,0,0,H);
+  water.addColorStop(0,"#238b91");
+  water.addColorStop(1,"#07505d");
+  ctx.fillStyle=water;
+  ctx.beginPath();
+  for(let y=0;y<=H;y+=8){
+    const e=roadEdges(y);
+    if(y===0)ctx.moveTo(e[0],y);else ctx.lineTo(e[0],y);
+  }
+  for(let y=H;y>=0;y-=8){
+    const e=roadEdges(y);
+    ctx.lineTo(e[1],y);
+  }
+  ctx.closePath();ctx.fill();
+
+  // Water lines
+  for(let i=0;i<35;i++){
+    const y=(i*37+(performance.now()*.12*speed))%H;
+    const c=riverCenter(y);
+    const width=riverWidth(y);
+    const x=c+Math.sin(i*8)*width*.35;
+    ctx.strokeStyle="#b7f5e055";
+    ctx.lineWidth=1+(y/H)*2;
+    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+12+(y/H)*18,y);ctx.stroke();
+  }
+}
+
+function drawBoat(){
+  const x=W/2+boatX*W*.30;
+  const y=H*.79;
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.rotate(boatX*.12);
+
+  // Boat shadow
+  ctx.fillStyle="#001c20aa";
+  ctx.beginPath();ctx.ellipse(0,18,35,12,0,0,Math.PI*2);ctx.fill();
+
+  // Boat body
+  ctx.fillStyle="#9b4f22";
+  ctx.beginPath();
+  ctx.moveTo(-34,-5);ctx.lineTo(34,-5);
+  ctx.lineTo(23,39);ctx.quadraticCurveTo(0,55,-23,39);
+  ctx.closePath();ctx.fill();
+
+  ctx.fillStyle="#e9a34d";
+  ctx.beginPath();ctx.moveTo(-27,0);ctx.lineTo(27,0);
+  ctx.lineTo(18,30);ctx.quadraticCurveTo(0,42,-18,30);
+  ctx.closePath();ctx.fill();
+
+  ctx.fillStyle="#542b18";
+  ctx.fillRect(-18,-18,36,18);
+  ctx.fillStyle="#e7c18b";
+  ctx.fillRect(-13,-15,26,12);
+
+  // Water wake
+  ctx.strokeStyle="#d1ffff99";ctx.lineWidth=3;
+  ctx.beginPath();ctx.moveTo(-20,44);ctx.lineTo(-36,65);
+  ctx.moveTo(20,44);ctx.lineTo(36,65);ctx.stroke();
+  ctx.restore();
+}
+
+function drawObject(o){
+  const y=o.y*H;
+  const perspective=.35+o.y*.9;
+  const center=riverCenter(y);
+  const x=center+o.x*riverWidth(y)*.42;
+  const s=perspective;
+
+  ctx.save();ctx.translate(x,y);
+  if(o.type==="coin"){
+    ctx.fillStyle="#ffd447";
+    ctx.beginPath();ctx.ellipse(0,0,9*s,12*s,0,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle="#fff2a0";ctx.lineWidth=2*s;
+    ctx.stroke();
+    ctx.fillStyle="#a66a08";ctx.font=`bold ${12*s}px Arial`;
+    ctx.textAlign="center";ctx.fillText("$",0,4*s);
+  }else if(o.type==="log"){
+    ctx.rotate(.2);
+    ctx.fillStyle="#70401f";
+    ctx.fillRect(-22*s,-9*s,44*s,18*s);
+    ctx.fillStyle="#a86c39";
+    ctx.beginPath();ctx.ellipse(-22*s,0,5*s,9*s,0,0,Math.PI*2);ctx.fill();
+  }else if(o.type==="rock"){
+    ctx.fillStyle="#66736c";
+    ctx.beginPath();ctx.moveTo(-20*s,8*s);ctx.lineTo(-12*s,-15*s);
+    ctx.lineTo(7*s,-20*s);ctx.lineTo(21*s,7*s);ctx.closePath();ctx.fill();
+    ctx.fillStyle="#a8b3a7";
+    ctx.beginPath();ctx.moveTo(-10*s,-9*s);ctx.lineTo(7*s,-17*s);ctx.lineTo(12*s,-4*s);ctx.fill();
+  }else if(o.type==="animal"){
+    ctx.fillStyle="#f2b36b";
+    ctx.beginPath();ctx.arc(0,0,13*s,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fff";
+    ctx.beginPath();ctx.arc(-5*s,-3*s,3*s,0,Math.PI*2);ctx.arc(5*s,-3*s,3*s,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#222";
+    ctx.beginPath();ctx.arc(-5*s,-3*s,1.5*s,0,Math.PI*2);ctx.arc(5*s,-3*s,1.5*s,0,Math.PI*2);ctx.fill();
+    ctx.font=`${18*s}px Arial`;ctx.textAlign="center";
+    ctx.fillText("🐾",0,-17*s);
+  }
+  ctx.restore();
+}
+
+function spawnObject(){
+  const r=Math.random();
+  let type;
+  if(r<.34)type="coin";
+  else if(r<.62)type="log";
+  else if(r<.87)type="rock";
+  else type="animal";
+  objects.push({x:(Math.random()-.5)*1.45,y:-.06,type});
+}
+
+function update(dt){
+  const step=dt/16.67;
+  const difficulty=1+(level-1)*.12;
+  speed=Math.max(.25,Math.min(1.25,speed));
+  objects.forEach(o=>o.y+=.0045*speed*difficulty*step);
+  spawnTimer+=dt;
+  if(spawnTimer>Math.max(420,1050-level*75)){
+    spawnObject();spawnTimer=0;
+  }
+
+  const boatY=.79;
+  for(let i=objects.length-1;i>=0;i--){
+    const o=objects[i];
+    if(o.y>.74&&o.y<.88){
+      const dx=Math.abs(o.x-boatX);
+      if(dx<.20){
+        if(o.type==="coin"){coins++;score+=10;}
+        else if(o.type==="animal"){score+=50;}
+        else{
+          score=Math.max(0,score-15);
+          speed=Math.max(.3,speed*.72);
+        }
+        objects.splice(i,1);
+        continue;
+      }
+    }
+    if(o.y>1.05)objects.splice(i,1);
+  }
+
+  boatX+=((tilt)-boatX)*Math.min(1,.09*step);
+  boatX=Math.max(-.85,Math.min(.85,boatX));
+
+  score+=Math.floor(dt*.012*speed);
+  level=Math.min(5,1+Math.floor(score/250));
+  scoreEl.textContent=score;
+  coinsEl.textContent=coins;
+  levelEl.textContent=level;
+}
+
+function draw(){
+  drawBackground();
+  objects.forEach(drawObject);
+  drawBoat();
+}
+
+function loop(time){
+  if(!running)return;
+  const dt=Math.min(40,time-lastTime||16);
+  lastTime=time;
+  update(dt);draw();
+  requestAnimationFrame(loop);
+}
+
+function startGame(){
+  score=0;coins=0;level=1;boatX=0;tilt=0;
+  speed=.48;objects=[];spawnTimer=0;
+  scoreEl.textContent="0";coinsEl.textContent="0";levelEl.textContent="1";
+  running=true;gameOver=false;
+  message.classList.add("hidden");
+  lastTime=performance.now();
+  requestAnimationFrame(loop);
+}
+
+function endGame(){
+  running=false;gameOver=true;
+  document.getElementById("intro").innerHTML=
+    "Your rescue journey is over!<br><br>⭐ Score: "+score+"<br>🪙 Coins: "+coins+"<br>🌿 Level: "+level;
+  startBtn.textContent="PLAY AGAIN ↻";
+  message.classList.remove("hidden");
+}
+
+async function enableMotion(){
+  try{
+    if(typeof DeviceOrientationEvent==="undefined"){
+      sensorStatus.textContent="Motion sensor is not supported in this browser.";
+      return;
+    }
+    if(typeof DeviceOrientationEvent.requestPermission==="function"){
+      const result=await DeviceOrientationEvent.requestPermission();
+      if(result!=="granted"){
+        sensorStatus.textContent="Motion permission was not granted.";
+        return;
+      }
+    }
+    window.addEventListener("deviceorientation",e=>{
+      if(e.gamma!==null){
+        tilt=Math.max(-.85,Math.min(.85,e.gamma/35));
+      }
+    });
+    motionEnabled=true;
+    sensorStatus.textContent="✅ Motion control enabled!";
+    motionBtn.textContent="Motion Control Enabled ✓";
+  }catch(err){
+    sensorStatus.textContent="Could not enable motion control. Try again.";
+  }
+}
+motionBtn.addEventListener("click",enableMotion);
+startBtn.addEventListener("click",startGame);
+
+// Vertical finger swipe controls speed only
+canvas.addEventListener("pointerdown",e=>{
+  verticalStart=e.clientY;
+});
+canvas.addEventListener("pointerup",e=>{
+  if(verticalStart!==null){
+    const diff=verticalStart-e.clientY;
+    if(diff>15)speed=Math.min(1.25,speed+.12);
+    if(diff< -15)speed=Math.max(.25,speed-.12);
+    verticalStart=null;
+  }
+});
+
+// Keyboard controls for desktop testing
+window.addEventListener("keydown",e=>{
+  if(e.key==="ArrowLeft")tilt=Math.max(-.85,tilt-.12);
+  if(e.key==="ArrowRight")tilt=Math.min(.85,tilt+.12);
+  if(e.key==="ArrowUp")speed=Math.min(1.25,speed+.1);
+  if(e.key==="ArrowDown")speed=Math.max(.25,speed-.1);
+});
+
+// End game if boat hits an obstacle
+const originalUpdate=update;
+update=function(dt){
+  const before=score;
+  originalUpdate(dt);
+  if(score<before) {
+    // A collision slows the boat; the game continues.
+  }
+};
+
+draw();
+</script>
+</body>
+  </html>
+  
